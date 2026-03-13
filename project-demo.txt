@@ -1,0 +1,863 @@
+# **Google Kubernetes Engine (GKE) Platform Architecture**
+
+## **Overview**
+
+In this lab, you will act as a **Platform Engineer** and build a production-ready Kubernetes platform on Google Cloud using **GKE Standard (Production)** and **GKE Autopilot (Staging)**.
+
+
+## **Scenario**
+
+As a Platform Engineer at a growing digital commerce company, you are tasked with building a production-ready Kubernetes platform on Google Cloud. The company needs a scalable, highly available infrastructure that can support both production and staging environments. Your responsibility is to implement containerization strategies, configure multi-zone clusters, establish network security, manage secrets securely, and ensure the platform can automatically scale based on demand while maintaining high availability across multiple zones.
+
+------------------------------------------------------------------------
+
+## **What You Will Learn**
+
+By completing this project, you will learn how to:
+
+-   Build and manage Docker container images
+-   Deploy production-grade GKE clusters with high availability
+-   Implement multi-environment architecture (production and staging)
+-   Configure custom VPC networks and ingress controllers
+-   Secure sensitive data using Secret Manager
+-   Implement horizontal pod autoscaling
+-   Validate multi-zone high availability
+-   Configure disaster recovery and backup strategies
+
+------------------------------------------------------------------------
+
+## **Prerequisites**
+
+-   Google Cloud project with Billing enabled
+-   Google Cloud Console access
+-   Basic understanding of containers and Kubernetes concepts
+
+------------------------------------------------------------------------
+
+## **Skill Tags**
+
+`Google Kubernetes Engine` `Docker` `Container Registry` `Artifact Registry` `VPC Networking` `Secret Manager` `High Availability` `Autoscaling`
+
+------------------------------------------------------------------------
+
+## **Milestones**
+
+-   Artifact Registry repository created
+-   Docker image built and pushed
+-   Production GKE cluster deployed
+-   Staging GKE cluster created
+-   Multi-namespace architecture implemented
+-   Ingress with external IP configured
+-   Secrets integrated from Secret Manager
+-   Horizontal Pod Autoscaler configured
+
+------------------------------------------------------------------------
+
+# Activity 1: Lab Setup & Environment Configuration
+
+## Objective
+
+Set up your Google Cloud environment, authenticate, and enable required APIs for the lab.
+
+------------------------------------------------------------------------
+
+## Step 1 - Verify Your Project & Open Terminal from VM
+
+1.  **Verify Project:** Look at the top navigation bar of the Google Cloud Console. Ensure the project dropdown shows the **Project ID** assigned to you for this lab.
+
+2.  Copy the **Project ID** from **Cloud overview → Dashboard** for later use.
+
+    ![](M7/pic2.png)
+
+3.  **Open Terminal from the VM:**  
+    -   On the VM desktop, click the **Terminal Emulator icon** (📟) present on the desktop.
+    -   This terminal will be used to run all `gcloud` and networking commands in this lab.
+
+    ![](M7/t1.png)
+
+------------------------------------------------------------------------
+
+## Step 2 - Auth Login and Set Project ID
+
+1.  From the **Terminal Emulator opened on the VM**, authenticate to Google Cloud:
+
+2. Run the below command:
+
+```bash
+gcloud auth login
+```
+
+-   This opens a browser window
+-   Sign in with your Google account
+-   Click **Continue → Allow**
+
+3.  Set the active project in the terminal:
+
+4. Run the below command:
+
+```bash
+# Replace 'your-project-id' with your actual Project ID
+export PROJECT_ID="your-project-id"
+
+gcloud config set project $PROJECT_ID
+```
+
+Replace 'your-project-id' with your actual Project ID.
+
+------------------------------------------------------------------------
+
+## Step 3 - Set Environment Variables
+
+**Purpose:** Define reusable variables for regions and project configuration.
+
+1. Run the below command:
+
+```bash
+# Set the primary region for production resources
+export REGION=us-central1
+
+# Set the disaster recovery region
+export DR_REGION=us-east1
+
+# Verify the variables are set correctly
+echo "Project ID: $PROJECT_ID"
+echo "Primary Region: $REGION"
+echo "DR Region: $DR_REGION"
+```
+
+------------------------------------------------------------------------
+
+## Step 4 - Enable Required Google Cloud APIs
+
+**Purpose:** Activate necessary Google Cloud services for the lab.
+
+1. Run the below command:
+
+```bash
+gcloud services enable container.googleapis.com \
+  artifactregistry.googleapis.com \
+  secretmanager.googleapis.com \
+  compute.googleapis.com
+```
+
+![](M7/1.png)
+
+------------------------------------------------------------------------
+
+# Activity 2: Containerization Strategy
+
+## Objective
+
+Create a private Docker registry and build a containerized application image.
+
+------------------------------------------------------------------------
+
+## Step 5 - Create Artifact Registry Repository
+
+**Purpose:** Create a private Docker registry to store container images.
+
+1. Run the below command:
+
+```bash
+gcloud artifacts repositories create fin-platform-repo \
+  --repository-format=docker \
+  --location=$REGION \
+  --description="Platform container repository for production workloads"
+```
+
+![](M7/p2.png)
+
+------------------------------------------------------------------------
+
+## Step 6 - Configure Docker Authentication
+
+**Purpose:** Configure Docker to authenticate with Artifact Registry.
+
+1. Run the below command:
+
+```bash
+gcloud auth configure-docker $REGION-docker.pkg.dev
+```
+
+Enter 'Y' when prompted.
+
+![](M7/p3.png)
+
+------------------------------------------------------------------------
+
+## Step 7 - Create a Sample Application
+
+**Purpose:** Create a simple web application to containerize.
+
+1. Run the below command:
+
+```bash
+# Create a directory for the application
+mkdir -p ~/sample-app
+cd ~/sample-app
+
+# Create a simple HTML file
+cat <<EOF > index.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Platform API Service</title>
+</head>
+<body>
+    <h1>Welcome to the Platform API Service</h1>
+    <p>Version: 1.0</p>
+    <p>Status: Running</p>
+</body>
+</html>
+EOF
+
+# Create a Dockerfile
+cat <<EOF > Dockerfile
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/index.html
+EXPOSE 80
+EOF
+```
+
+![](M7/p4.png)
+
+------------------------------------------------------------------------
+
+## Step 8 - Build and Push Container Image
+
+**Purpose:** Build a Docker image and upload it to Artifact Registry.
+
+1. Run the below command:
+
+```bash
+# Build the image
+docker build -t $REGION-docker.pkg.dev/$PROJECT_ID/fin-platform-repo/api-image:v1 .
+
+# Push to Artifact Registry
+docker push $REGION-docker.pkg.dev/$PROJECT_ID/fin-platform-repo/api-image:v1
+
+# Verify image in Artifact Registry
+gcloud artifacts docker images list $REGION-docker.pkg.dev/$PROJECT_ID/fin-platform-repo
+```
+
+![](M7/p5.png)
+![](M7/p6.png)
+
+------------------------------------------------------------------------
+
+# Activity 3: Production GKE Cluster (Standard Mode)
+
+## Objective
+
+Create a highly available, production-grade GKE cluster with custom VPC networking.
+
+------------------------------------------------------------------------
+
+## Step 9 - Create Custom VPC Network
+
+**Purpose:** Create a dedicated VPC network for GKE clusters.
+
+1. Run the below command:
+
+```bash
+cd ..
+
+gcloud compute networks create fin-platform-vpc \
+  --subnet-mode=custom \
+  --bgp-routing-mode=regional
+```
+
+------------------------------------------------------------------------
+
+## Step 10 - Create Subnet for GKE
+
+**Purpose:** Create a subnet with IP range for GKE nodes.
+
+1. Run the below command:
+
+```bash
+gcloud compute networks subnets create gke-subnet \
+  --network=fin-platform-vpc \
+  --range=10.10.0.0/16 \
+  --region=$REGION \
+  --enable-private-ip-google-access
+```
+
+![](M7/p7.png)
+
+------------------------------------------------------------------------
+
+## Step 11 - Create Production GKE Regional Cluster
+
+**Purpose:** Create a highly available, production-grade GKE cluster across multiple zones.
+
+**Note:** This step takes 5-7 minutes. While it's creating, you can explore the GKE console to see the cluster being provisioned.
+
+1. Run the below command:
+
+```bash
+# Install GKE auth plugin
+sudo apt-get update && sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin && export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+
+# Create the cluster
+gcloud container clusters create prod-cluster \
+  --region=$REGION \
+  --network=fin-platform-vpc \
+  --subnetwork=gke-subnet \
+  --enable-ip-alias \
+  --enable-autoscaling \
+  --min-nodes=2 \
+  --max-nodes=6 \
+  --num-nodes=2 \
+  --machine-type=e2-standard-4 \
+  --disk-size=50 \
+  --disk-type=pd-standard \
+  --enable-autorepair \
+  --enable-autoupgrade \
+  --addons=HorizontalPodAutoscaling,HttpLoadBalancing
+```
+
+![](M7/pic12.png)
+
+**While Waiting:** Navigate to **Kubernetes Engine → Clusters** in the console click on create and choose Autopilot/Standard and explore all the fields and watch the cluster creation progress.
+
+------------------------------------------------------------------------
+
+## Step 12 - Get Cluster Credentials
+
+**Purpose:** Configure kubectl to communicate with the GKE cluster.
+
+1. Run the below command:
+
+```bash
+gcloud container clusters get-credentials prod-cluster --region=$REGION
+```
+
+![](M7/p8.png)
+
+------------------------------------------------------------------------
+
+## Step 13 - Verify Cluster Access
+
+**Purpose:** Confirm kubectl can communicate with the cluster.
+
+1. Run the below command:
+
+```bash
+# View cluster information
+kubectl cluster-info
+
+# List all nodes
+kubectl get nodes
+
+# View node details including zones
+kubectl get nodes -o wide
+```
+
+**Success Indicator:** You should see 6 nodes (2 per zone) in READY status.
+
+------------------------------------------------------------------------
+
+# Activity 4: Multi-Environment Strategy
+
+## Objective
+
+Create a cost-effective staging environment using GKE Autopilot.
+
+------------------------------------------------------------------------
+
+## Step 14 - Create Staging Cluster (Autopilot)
+
+**Purpose:** Create a cost-effective staging environment using GKE Autopilot.
+
+**Key Difference:** Autopilot is fully managed - Google handles nodes, scaling, and security automatically.
+
+1. Run the below command:
+
+```bash
+gcloud container clusters create-auto staging-cluster \
+  --region=$REGION \
+  --network=fin-platform-vpc \
+  --subnetwork=gke-subnet
+```
+
+![](M7/p9.png)
+
+**Discussion Point:** 
+-   **Standard Mode:** Full control over nodes, machine types, and configurations
+-   **Autopilot Mode:** Fully managed, pay-per-pod pricing, automatic optimization
+
+------------------------------------------------------------------------
+
+## Step 15 - Switch Back to Production Cluster
+
+**Purpose:** Set kubectl context back to the production cluster.
+
+1. Run the below command:
+
+```bash
+gcloud container clusters get-credentials prod-cluster --region=$REGION
+```
+
+------------------------------------------------------------------------
+
+# Activity 5: Namespace & Workload Deployment
+
+## Objective
+
+Create logical separations for applications and deploy containerized workloads.
+
+------------------------------------------------------------------------
+
+## Step 16 - Create Namespaces
+
+**Purpose:** Create logical separations for frontend and backend applications.
+
+1. Run the below command:
+
+```bash
+# Create namespace for frontend applications
+kubectl create namespace frontend
+
+# Create namespace for backend services
+kubectl create namespace backend
+
+# Verify namespaces were created
+kubectl get namespaces
+```
+
+![](M7/p10.png)
+
+------------------------------------------------------------------------
+
+## Step 17 - Deploy Backend Application
+
+**Purpose:** Deploy containerized API service to the backend namespace.
+
+1. Run the below command:
+
+```bash
+cat <<EOF > api-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: backend
+  labels:
+    app: api-service
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+        tier: backend
+    spec:
+      containers:
+      - name: api
+        image: $REGION-docker.pkg.dev/$PROJECT_ID/fin-platform-repo/api-image:v1
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        ports:
+        - containerPort: 80
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+EOF
+
+# Apply the deployment
+kubectl apply -f api-deployment.yaml
+```
+
+------------------------------------------------------------------------
+
+## Step 18 - Verify Deployment
+
+**Purpose:** Confirm pods are running successfully.
+
+1. Run the below command:
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+--member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+--role="roles/artifactregistry.reader"
+```
+Update PROJECT_NUMBER with your project number
+
+After 2minutes run the below commands: 
+
+2. Run the below command:
+
+```bash
+# Check deployment status
+kubectl get deployment -n backend
+```
+
+3. Run the below command:
+
+```bash
+# Check pod status
+kubectl get pods -n backend
+```
+
+**Success Indicator:** Both pods should show `STATUS: Running` and `READY: 1/1`.
+
+------------------------------------------------------------------------
+
+## Step 19 - Expose Backend Service Internally
+
+**Purpose:** Create a stable internal endpoint for backend pods.
+
+1. Run the below command:
+
+```bash
+kubectl expose deployment api-service \
+  --namespace=backend \
+  --type=ClusterIP \
+  --port=80 \
+  --target-port=80 \
+  --name=api-service
+
+# View service details
+kubectl get svc -n backend
+
+# View service endpoints (pod IPs)
+kubectl get endpoints -n backend
+```
+
+![](M7/p11.png)
+
+------------------------------------------------------------------------
+
+# Activity 6: Network & Ingress Design
+
+## Objective
+
+Expose frontend application via Google Cloud Load Balancer with public IP.
+
+------------------------------------------------------------------------
+
+## Step 20 - Deploy Frontend Application
+
+**Purpose:** Deploy a frontend application for public access.
+
+1. Run the below command:
+
+```bash
+# Create frontend deployment
+kubectl create deployment frontend \
+  --image=nginx:alpine \
+  --namespace=frontend \
+  --replicas=2
+```
+
+2. Run the below command:
+
+```bash 
+# Verify deployment
+kubectl get deployment -n frontend
+kubectl get pods -n frontend
+```
+![](M7/p12.png)
+
+------------------------------------------------------------------------
+
+## Step 21 - Expose Frontend with NodePort
+
+**Purpose:** Create a NodePort Service for the frontend.
+
+1. Run the below command:
+
+```bash
+kubectl expose deployment frontend \
+  --type=NodePort \
+  --port=80 \
+  --target-port=80 \
+  --namespace=frontend \
+  --name=frontend
+```
+![](M7/p15.png)
+
+------------------------------------------------------------------------
+
+## Step 22 - Create Ingress Resource
+
+**Purpose:** Expose frontend via Google Cloud Load Balancer with public IP.
+
+1. Run the below command:
+
+```bash
+cat <<EOF > ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: frontend
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+spec:
+  defaultBackend:
+    service:
+      name: frontend
+      port:
+        number: 80
+EOF
+
+# Apply the ingress
+kubectl apply -f ingress.yaml
+```
+![](M7/p16.png)
+
+------------------------------------------------------------------------
+
+# Activity 7: Secrets & Config Architecture
+
+## Objective
+
+Store and manage sensitive data securely using Secret Manager and Kubernetes secrets.
+
+------------------------------------------------------------------------
+
+## Step 23 - Create Secret in Secret Manager
+
+**Purpose:** Store sensitive data securely in Google Secret Manager.
+
+1. Run the below command:
+
+```bash
+# Create a secret
+echo -n "SuperSecurePassword123!" | \
+gcloud secrets create db-password \
+  --replication-policy="automatic" \
+  --data-file=-
+
+# Verify secret was created
+gcloud secrets list
+```
+
+![](M7/p13.png)
+
+**Discussion Point:** Secret Manager provides centralized secret management with automatic replication, versioning, and audit logging.
+
+------------------------------------------------------------------------
+
+## Step 24 - Create Kubernetes Secret (Simplified Approach)
+
+**Purpose:** Create a Kubernetes secret for pod consumption.
+
+1. Run the below command:
+
+```bash
+# Create a Kubernetes secret from Secret Manager
+kubectl create secret generic db-credentials \
+  --from-literal=password=SuperSecurePassword123! \
+  --namespace=backend
+
+# Verify secret creation
+kubectl get secrets -n backend
+```
+
+![](M7/p14.png)
+
+------------------------------------------------------------------------
+
+## Step 25 - Update Deployment to Use Secret
+
+**Purpose:** Configure backend deployment to use the secret as an environment variable.
+
+1. Run the below command:
+
+```bash
+kubectl patch deployment api-service -n backend --type='json' -p='[
+  {
+    "op": "add",
+    "path": "/spec/template/spec/containers/0/env",
+    "value": [
+      {
+        "name": "DB_PASSWORD",
+        "valueFrom": {
+          "secretKeyRef": {
+            "name": "db-credentials",
+            "key": "password"
+          }
+        }
+      }
+    ]
+  }
+]'
+```
+
+2. Run the below command:
+
+```bash
+# Verify pods are restarted with the secret
+kubectl get pods -n backend
+```
+![](M7/17.png)
+
+------------------------------------------------------------------------
+
+# Activity 8: Autoscaling & High Availability
+
+## Objective
+
+Implement automatic scaling and validate multi-zone high availability.
+
+------------------------------------------------------------------------
+
+## Step 26 - Enable Horizontal Pod Autoscaler (HPA)
+
+**Purpose:** Automatically scale pods based on CPU utilization.
+
+1. Run the below command:
+
+```bash
+kubectl autoscale deployment api-service \
+  --cpu-percent=60 \
+  --min=2 \
+  --max=10 \
+  --namespace=backend
+```
+
+2. Run the below command:
+
+```bash
+# View HPA status
+kubectl get hpa -n backend
+```
+
+**Discussion Point:** HPA automatically adjusts the number of pods based on observed CPU utilization or custom metrics.
+
+------------------------------------------------------------------------
+
+## Step 27 - Validate Multi-Zone High Availability
+
+**Purpose:** Verify nodes and pods are distributed across multiple availability zones.
+
+1. Run the below command:
+
+```bash
+# View nodes with zone information
+kubectl get nodes -o custom-columns=NAME:.metadata.name,ZONE:.metadata.labels."topology\.kubernetes\.io/zone"
+
+# View pod distribution across nodes
+kubectl get pods -n backend -o wide
+
+# Check node distribution
+kubectl get nodes --show-labels | grep topology.kubernetes.io/zone
+```
+![](M7/p17.png)
+
+**Success Indicator:** Nodes distributed across at least 3 zones (us-central1-a, us-central1-b, us-central1-c).
+
+------------------------------------------------------------------------
+
+# Activity 9: Final Validation
+
+## Step 28 - Verify Frontend via Console
+
+**Purpose:** Navigate through the GKE console to verify the frontend deployment and access the application.
+
+1.  **Navigate to Kubernetes Engine:**
+    -   In the Google Cloud Console, go to **Kubernetes Engine → Workloads**
+    
+2.  **Click on Frontend Deployment:**
+    -   In the Workloads list, locate and click on the **frontend** deployment in the **frontend** namespace
+    
+3.  **Access Ingress IP:**
+    -   In the deployment details page, scroll down to the **Exposing services** section
+    -   Click on the **Ingress IP address** link (it will be in the format 34.XXX.XXX.XXX)
+    -   This will open a new browser tab showing the nginx welcome page
+
+**Success Indicator:** You should see the nginx welcome page, confirming that the frontend is accessible via the public load balancer IP.
+
+------------------------------------------------------------------------
+
+## Step 29 - Comprehensive System Validation
+
+**Purpose:** Verify all components are functioning correctly and the platform is production-ready.
+
+1. Run the below command:
+
+```bash
+echo "=== CLUSTER VALIDATION ==="
+kubectl cluster-info
+
+echo -e "\n=== NODE VALIDATION ==="
+kubectl get nodes -o wide
+
+echo -e "\n=== NAMESPACE VALIDATION ==="
+kubectl get namespaces
+
+echo -e "\n=== POD VALIDATION ==="
+kubectl get pods --all-namespaces
+
+echo -e "\n=== SERVICE VALIDATION ==="
+kubectl get svc --all-namespaces
+
+echo -e "\n=== INGRESS VALIDATION ==="
+kubectl get ingress --all-namespaces
+
+echo -e "\n=== HPA VALIDATION ==="
+kubectl get hpa --all-namespaces
+
+echo -e "\n=== SECRET VALIDATION ==="
+gcloud secrets list
+
+echo -e "\n=== ARTIFACT REGISTRY VALIDATION ==="
+gcloud artifacts docker images list $REGION-docker.pkg.dev/$PROJECT_ID/fin-platform-repo
+```
+
+------------------------------------------------------------------------
+
+### Expected Validation Results:
+
+**Production Cluster Running** - 6 nodes across 3 zones  
+**Staging Cluster Created** - Autopilot mode in us-central1  
+**Namespaces Separated** - frontend and backend active  
+**Pods Running** - All pods showing STATUS: Running, READY: 1/1  
+**Services Configured** - ClusterIP and NodePort services with endpoints  
+**Ingress Assigned IP** - External IP (34.XXX.XXX.XXX) accessible  
+**Secrets Created** - db-password in Secret Manager and Kubernetes  
+**HPA Active** - Min 2, Max 10 pods, Target 60% CPU  
+**Nodes Multi-Zonal** - Distributed across us-central1-a/b/c  
+**Configuration Backed Up** - YAML manifests exported
+
+------------------------------------------------------------------------
+
+# Conclusion
+
+In this lab, you successfully built a production-ready Kubernetes platform on Google Cloud. You implemented containerization strategies, deployed highly available GKE clusters, configured multi-environment architecture, established network security with ingress controllers, integrated secrets management, implemented autoscaling, validated multi-zone high availability, and configured disaster recovery backup strategies.
+
+# Final Architecture Summary
+
+-   **Artifact Registry** → Private container image storage
+-   **GKE Standard** → Production cluster with full control
+-   **GKE Autopilot** → Staging cluster with managed infrastructure
+-   **Custom VPC** → Dedicated network isolation
+-   **Namespaces** → Logical application separation
+-   **Ingress** → External load balancing
+-   **Secret Manager** → Centralized secrets management
+-   **HPA** → Automatic pod scaling
+-   **Multi-Zone Deployment** → High availability
+
+You have successfully implemented a production-ready Kubernetes platform on Google Cloud.
